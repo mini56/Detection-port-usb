@@ -18,7 +18,7 @@ try:
 except ImportError:
     list_ports = None
 
-DUREE_ATTENTE = 10  # secondes
+DUREE_ATTENTE = 15  # secondes
 
 
 class App:
