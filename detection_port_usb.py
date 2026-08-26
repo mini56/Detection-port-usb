@@ -2,12 +2,9 @@
 Détection d'adaptateur de diagnostic
 --------------------------------------
 Deux modes :
-  1) USB / Bluetooth : surveille les ports COM pendant 15 secondes
-     (un adaptateur Bluetooth apparié apparaît aussi comme un port
-     COM sous Windows, via le profil SPP).
+  1) USB / Bluetooth : surveille les ports COM pendant 15 secondes.
   2) WiFi : scanne le réseau local à la recherche d'un adaptateur
-     WiFi de type ELM327 (port réseau 35000, standard sur ce type
-     de matériel).
+     WiFi type ELM327 (port réseau 35000) et identifie son modèle.
 
 Prérequis : pip install pyserial
 Lancement : python detection_port_usb.py
@@ -19,16 +16,29 @@ import threading
 import time
 import socket
 import ipaddress
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     import serial.tools.list_ports as list_ports
 except ImportError:
     list_ports = None
 
-DUREE_ATTENTE_COM = 15   # secondes, mode USB/Bluetooth
-PORT_WIFI_ELM327 = 35000  # port réseau standard des adaptateurs WiFi type ELM327
-TIMEOUT_SCAN_WIFI = 0.3   # secondes par adresse testée
+DUREE_ATTENTE_COM = 15
+PORT_WIFI_ELM327 = 35000
+TIMEOUT_SCAN_WIFI = 0.3
+
+# ---------- Thème visuel ----------
+COULEUR_FOND = "#0a0a0a"
+COULEUR_FOND_CARTE = "#141414"
+COULEUR_TEXTE = "#FFFFFF"
+COULEUR_TEXTE_SECONDAIRE = "#B0B0B0"
+COULEUR_ACCENT = "#FF8C00"
+COULEUR_OK = "#4CD964"
+COULEUR_ERREUR = "#FF5C5C"
+POLICE_TITRE = ("Segoe UI Semibold", 15)
+POLICE_TEXTE = ("Segoe UI", 11)
+POLICE_RESULTAT = ("Segoe UI Semibold", 12)
+POLICE_MONO = ("Consolas", 9)
 
 PUCES_CONNUES = {
     (0x0403, 0x6001): "FTDI FT232",
@@ -63,8 +73,6 @@ def identifier_puce(port_info):
 
 
 def obtenir_ip_locale():
-    """Retourne l'adresse IP locale de la machine (celle utilisée
-    pour sortir sur le réseau), sans envoyer de vraies données."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("8.8.8.8", 80))
@@ -77,12 +85,10 @@ def obtenir_ip_locale():
 
 
 def tester_adresse_wifi(ip):
-    """Teste si un hôte répond sur le port ELM327 WiFi standard."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(TIMEOUT_SCAN_WIFI)
-            resultat = s.connect_ex((str(ip), PORT_WIFI_ELM327))
-            if resultat == 0:
+            if s.connect_ex((str(ip), PORT_WIFI_ELM327)) == 0:
                 return str(ip)
     except Exception:
         pass
@@ -90,10 +96,6 @@ def tester_adresse_wifi(ip):
 
 
 def identifier_modele_wifi(ip, port=PORT_WIFI_ELM327, timeout=2.0):
-    """Se connecte à l'adaptateur WiFi et envoie la commande AT 'ATI'
-    (identification), standard sur les interfaces compatibles ELM327.
-    Retourne le texte de réponse brut (ex: 'ELM327 v1.5'), ou None
-    si l'adaptateur ne répond pas à cette commande."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(timeout)
@@ -121,16 +123,19 @@ class App:
     def __init__(self, root):
         self.root = root
         root.title("Détection d'adaptateur de diagnostic")
-        root.geometry("520x400")
+        root.geometry("540x420")
         root.resizable(False, False)
+        root.configure(bg=COULEUR_FOND)
 
-        self.notebook = ttk.Notebook(root)
-        self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
+        self._configurer_style()
 
-        self.onglet_com = tk.Frame(self.notebook)
-        self.onglet_wifi = tk.Frame(self.notebook)
-        self.notebook.add(self.onglet_com, text="USB / Bluetooth (port COM)")
-        self.notebook.add(self.onglet_wifi, text="WiFi (réseau)")
+        self.notebook = ttk.Notebook(root, style="Sombre.TNotebook")
+        self.notebook.pack(fill="both", expand=True, padx=14, pady=14)
+
+        self.onglet_com = tk.Frame(self.notebook, bg=COULEUR_FOND_CARTE)
+        self.onglet_wifi = tk.Frame(self.notebook, bg=COULEUR_FOND_CARTE)
+        self.notebook.add(self.onglet_com, text="  USB / Bluetooth  ")
+        self.notebook.add(self.onglet_wifi, text="  WiFi  ")
 
         self._construire_onglet_com()
         self._construire_onglet_wifi()
@@ -139,34 +144,83 @@ class App:
         if list_ports is None:
             self.label_com.config(
                 text="Le module 'pyserial' est requis.\nInstallez-le avec : pip install pyserial",
-                fg="red",
+                fg=COULEUR_ERREUR,
             )
         else:
             self.start_detection_com()
 
+    def _configurer_style(self):
+        style = ttk.Style()
+        style.theme_use("clam")
+
+        style.configure(
+            "Sombre.TNotebook", background=COULEUR_FOND, borderwidth=0
+        )
+        style.configure(
+            "Sombre.TNotebook.Tab",
+            background=COULEUR_FOND_CARTE,
+            foreground=COULEUR_TEXTE_SECONDAIRE,
+            font=("Segoe UI Semibold", 10),
+            padding=(14, 8),
+            borderwidth=0,
+        )
+        style.map(
+            "Sombre.TNotebook.Tab",
+            background=[("selected", COULEUR_ACCENT)],
+            foreground=[("selected", "#1a1200")],
+        )
+
+        style.configure(
+            "Orange.Horizontal.TProgressbar",
+            troughcolor=COULEUR_FOND,
+            background=COULEUR_ACCENT,
+            bordercolor=COULEUR_FOND,
+            lightcolor=COULEUR_ACCENT,
+            darkcolor=COULEUR_ACCENT,
+            thickness=16,
+        )
+
     # ---------- Onglet USB / Bluetooth ----------
 
     def _construire_onglet_com(self):
+        cadre = self.onglet_com
+
         self.label_com = tk.Label(
-            self.onglet_com,
-            text="Brancher votre câble à la prise USB\n(ou appairer votre adaptateur Bluetooth)",
-            font=("Segoe UI", 12), wraplength=460, justify="center",
+            cadre,
+            text="Branchez votre câble à la prise USB\n(ou appairez votre adaptateur Bluetooth)",
+            font=POLICE_TITRE, fg=COULEUR_TEXTE, bg=COULEUR_FOND_CARTE,
+            wraplength=460, justify="center",
         )
-        self.label_com.pack(pady=(20, 5))
+        self.label_com.pack(pady=(26, 14))
 
-        self.puce_label = tk.Label(self.onglet_com, text="", font=("Segoe UI", 10, "bold"), fg="#333333")
-        self.puce_label.pack()
+        self.progress_com = ttk.Progressbar(
+            cadre, style="Orange.Horizontal.TProgressbar",
+            orient="horizontal", mode="determinate",
+            maximum=DUREE_ATTENTE_COM, length=420,
+        )
+        self.progress_com.pack(pady=(0, 8))
 
-        self.countdown_label_com = tk.Label(self.onglet_com, text="", font=("Segoe UI", 10), fg="gray")
+        self.countdown_label_com = tk.Label(
+            cadre, text="", font=POLICE_TEXTE, fg=COULEUR_TEXTE_SECONDAIRE, bg=COULEUR_FOND_CARTE
+        )
         self.countdown_label_com.pack()
 
-        self.debug_label_com = tk.Label(
-            self.onglet_com, text="", font=("Consolas", 9), fg="#555555", justify="left", wraplength=460
+        self.puce_label = tk.Label(
+            cadre, text="", font=POLICE_RESULTAT, fg=COULEUR_TEXTE, bg=COULEUR_FOND_CARTE
         )
-        self.debug_label_com.pack(pady=(10, 0))
+        self.puce_label.pack(pady=(16, 0))
+
+        self.debug_label_com = tk.Label(
+            cadre, text="", font=POLICE_MONO, fg=COULEUR_TEXTE_SECONDAIRE, bg=COULEUR_FOND_CARTE,
+            justify="left", wraplength=460,
+        )
+        self.debug_label_com.pack(pady=(14, 0))
 
         self.restart_button_com = tk.Button(
-            self.onglet_com, text="Recommencer", command=self.start_detection_com, width=16
+            cadre, text="Recommencer", command=self.start_detection_com, width=18,
+            bg=COULEUR_ACCENT, fg="#1a1200", activebackground="#FFA733",
+            activeforeground="#1a1200", relief="flat", font=("Segoe UI Semibold", 10),
+            cursor="hand2",
         )
 
     def get_ports(self):
@@ -175,10 +229,11 @@ class App:
     def start_detection_com(self):
         self.restart_button_com.pack_forget()
         self.label_com.config(
-            text="Brancher votre câble à la prise USB\n(ou appairer votre adaptateur Bluetooth)",
-            fg="black",
+            text="Branchez votre câble à la prise USB\n(ou appairez votre adaptateur Bluetooth)",
+            fg=COULEUR_TEXTE,
         )
         self.puce_label.config(text="")
+        self.progress_com["value"] = 0
         self.detecting_com = True
         self.initial_ports = self.get_ports()
         self.seconds_left = DUREE_ATTENTE_COM
@@ -193,6 +248,7 @@ class App:
         if not self.detecting_com:
             return
         self.countdown_label_com.config(text=f"Temps restant : {self.seconds_left}s")
+        self.progress_com["value"] = DUREE_ATTENTE_COM - self.seconds_left
         if self.seconds_left > 0:
             self.seconds_left -= 1
             self.root.after(1000, self.update_countdown_com)
@@ -221,48 +277,65 @@ class App:
 
     def show_result_com(self, device, info):
         self.countdown_label_com.config(text="")
+        self.progress_com["value"] = DUREE_ATTENTE_COM
         if device:
-            self.label_com.config(text=f"Port détecté : {device}", fg="dark green")
+            self.label_com.config(text=f"Port détecté : {device}", fg=COULEUR_OK)
             puce = identifier_puce(info) if info else None
             if puce:
-                self.puce_label.config(text=f"Identifié : {puce}", fg="dark green")
+                self.puce_label.config(text=f"Identifié : {puce}", fg=COULEUR_OK)
             else:
-                self.puce_label.config(text="Identification non reconnue (VID/PID inconnu)", fg="#B8860B")
+                self.puce_label.config(text="Identification non reconnue (VID/PID inconnu)", fg=COULEUR_ACCENT)
         else:
             self.label_com.config(
                 text='Aucun port détecté.\n'
                 'Retirez/déconnectez l\'accessoire et cliquez sur "Recommencer".',
-                fg="red",
+                fg=COULEUR_ERREUR,
             )
-        self.restart_button_com.pack(pady=15)
+        self.restart_button_com.pack(pady=18)
 
     # ---------- Onglet WiFi ----------
 
     def _construire_onglet_wifi(self):
+        cadre = self.onglet_wifi
+
         self.label_wifi = tk.Label(
-            self.onglet_wifi,
+            cadre,
             text="Connectez-vous d'abord au réseau WiFi de votre adaptateur,\npuis cliquez sur \"Rechercher\".",
-            font=("Segoe UI", 12), wraplength=460, justify="center",
+            font=POLICE_TITRE, fg=COULEUR_TEXTE, bg=COULEUR_FOND_CARTE,
+            wraplength=460, justify="center",
         )
-        self.label_wifi.pack(pady=(20, 10))
+        self.label_wifi.pack(pady=(26, 16))
 
         self.search_button_wifi = tk.Button(
-            self.onglet_wifi, text="Rechercher", command=self.start_scan_wifi, width=16
+            cadre, text="Rechercher", command=self.start_scan_wifi, width=18,
+            bg=COULEUR_ACCENT, fg="#1a1200", activebackground="#FFA733",
+            activeforeground="#1a1200", relief="flat", font=("Segoe UI Semibold", 10),
+            cursor="hand2",
         )
         self.search_button_wifi.pack()
 
-        self.progress_label_wifi = tk.Label(self.onglet_wifi, text="", font=("Segoe UI", 10), fg="gray")
-        self.progress_label_wifi.pack(pady=(10, 0))
+        self.progress_wifi = ttk.Progressbar(
+            cadre, style="Orange.Horizontal.TProgressbar",
+            orient="horizontal", mode="determinate",
+            maximum=100, length=420,
+        )
+        self.progress_wifi.pack(pady=(20, 8))
+
+        self.progress_label_wifi = tk.Label(
+            cadre, text="", font=POLICE_TEXTE, fg=COULEUR_TEXTE_SECONDAIRE, bg=COULEUR_FOND_CARTE
+        )
+        self.progress_label_wifi.pack()
 
         self.result_label_wifi = tk.Label(
-            self.onglet_wifi, text="", font=("Segoe UI", 11, "bold"), fg="#333333",
+            cadre, text="", font=POLICE_RESULTAT, fg=COULEUR_TEXTE, bg=COULEUR_FOND_CARTE,
             wraplength=460, justify="center",
         )
-        self.result_label_wifi.pack(pady=(15, 0))
+        self.result_label_wifi.pack(pady=(18, 0))
 
     def start_scan_wifi(self):
         self.search_button_wifi.config(state="disabled")
         self.result_label_wifi.config(text="")
+        self.progress_wifi["value"] = 0
         self.progress_label_wifi.config(text="Recherche en cours sur le réseau local...")
         threading.Thread(target=self.scan_wifi, daemon=True).start()
 
@@ -274,12 +347,19 @@ class App:
         except Exception:
             hotes = []
 
+        total = max(len(hotes), 1)
         trouve = None
+        termines = 0
+
         with ThreadPoolExecutor(max_workers=64) as executor:
-            for resultat in executor.map(tester_adresse_wifi, hotes):
-                if resultat:
+            futures = {executor.submit(tester_adresse_wifi, h): h for h in hotes}
+            for future in as_completed(futures):
+                termines += 1
+                pourcentage = (termines / total) * 100
+                self.root.after(0, lambda p=pourcentage: self.progress_wifi.config(value=p))
+                resultat = future.result()
+                if resultat and not trouve:
                     trouve = resultat
-                    break
 
         modele = None
         if trouve:
@@ -299,14 +379,14 @@ class App:
                 texte += f"\nModèle identifié : {modele}"
             else:
                 texte += "\nModèle non identifié (pas de réponse à la commande ATI)"
-            self.result_label_wifi.config(text=texte, fg="dark green")
+            self.result_label_wifi.config(text=texte, fg=COULEUR_OK)
         else:
             self.result_label_wifi.config(
                 text="Aucun adaptateur WiFi détecté sur le réseau.\n"
                 f"(Votre PC est actuellement sur : {ip_locale})\n"
                 "Vérifiez que vous êtes bien connecté au réseau WiFi\n"
                 "créé par l'adaptateur, puis réessayez.",
-                fg="red",
+                fg=COULEUR_ERREUR,
             )
 
 
